@@ -1,5 +1,9 @@
 # gateway
 
+[![ci](https://github.com/pilot-protocol/gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/pilot-protocol/gateway/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pilot-protocol/gateway/branch/main/graph/badge.svg)](https://codecov.io/gh/pilot-protocol/gateway)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 Gateway plugin for the Pilot Protocol daemon. Maps virtual pilot
 addresses to local loopback aliases (`ip addr add` on Linux,
 `ifconfig lo0 alias` on macOS) so legacy TCP/UDP apps can dial
@@ -36,3 +40,7 @@ rt.Register(g)
 | Tag | Effect |
 |---|---|
 | `no_gateway` | Compiles a stub whose `Start` is a no-op. |
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
