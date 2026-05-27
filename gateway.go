@@ -226,28 +226,44 @@ func (gw *Gateway) listenPort(localIP net.IP, port uint16, pilotAddr protocol.Ad
 }
 
 func (gw *Gateway) bridgeConnection(tcpConn net.Conn, pilotAddr protocol.Addr, port uint16) {
-	defer tcpConn.Close()
+	// Each conn is closed at most once via sync.Once. Both copy
+	// goroutines AND the defer fall-through call closeBoth, so when
+	// ANY side ends the bridge tears down symmetrically (closes the
+	// peer conn so the other io.Copy unblocks). Without sync.Once the
+	// previous code ran net.Conn.Close 3-4 times per bridge —
+	// idempotent on TCP but noisy in logs and pointless work; under a
+	// slow-close kernel it can also delay shutdown.
+	var tcpOnce sync.Once
+	closeTCP := func() { tcpOnce.Do(func() { tcpConn.Close() }) }
+	defer closeTCP()
 
 	pilotConn, err := gw.dialer.DialAddr(pilotAddr, port)
 	if err != nil {
 		slog.Error("gateway dial failed", "pilot_addr", pilotAddr, "port", port, "err", err)
 		return
 	}
-	defer pilotConn.Close()
+	var pilotOnce sync.Once
+	closePilot := func() { pilotOnce.Do(func() { pilotConn.Close() }) }
+	defer closePilot()
 
 	done := make(chan struct{}, 2)
 	go func() {
 		if _, err := io.Copy(pilotConn, tcpConn); err != nil {
 			slog.Debug("gateway copy tcp→pilot ended", "error", err)
 		}
-		pilotConn.Close()
+		// Close BOTH so the peer io.Copy unblocks immediately rather
+		// than waiting for the kernel to notice via the now-closed
+		// peer's TCP teardown.
+		closePilot()
+		closeTCP()
 		done <- struct{}{}
 	}()
 	go func() {
 		if _, err := io.Copy(tcpConn, pilotConn); err != nil {
 			slog.Debug("gateway copy pilot→tcp ended", "error", err)
 		}
-		tcpConn.Close()
+		closeTCP()
+		closePilot()
 		done <- struct{}{}
 	}()
 
