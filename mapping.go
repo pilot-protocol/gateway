@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
+	"github.com/pilot-protocol/common/protocol"
 )
 
 // MappingTable maps local IPs to Pilot addresses and vice versa.

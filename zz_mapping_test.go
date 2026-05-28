@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
+	"github.com/pilot-protocol/common/protocol"
 )
 
 func TestNewMappingTable_InvalidCIDR(t *testing.T) {
