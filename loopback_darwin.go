@@ -3,15 +3,17 @@
 package gateway
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"os/exec"
 )
 
-func (gw *Gateway) addLoopbackAlias(ip net.IP) {
+func (gw *Gateway) addLoopbackAlias(ip net.IP) error {
 	if err := exec.Command("ifconfig", "lo0", "alias", ip.String()).Run(); err != nil {
-		slog.Error("addLoopbackAlias failed", "ip", ip, "os", "darwin", "err", err)
+		return fmt.Errorf("ifconfig lo0 alias %s: %w", ip, err)
 	}
+	return nil
 }
 
 func (gw *Gateway) removeLoopbackAlias(ip net.IP) {
