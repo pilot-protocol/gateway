@@ -5,13 +5,14 @@
 package gateway
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"runtime"
 )
 
-func (gw *Gateway) addLoopbackAlias(ip net.IP) {
-	slog.Error("addLoopbackAlias: unsupported OS", "ip", ip, "os", runtime.GOOS)
+func (gw *Gateway) addLoopbackAlias(ip net.IP) error {
+	return fmt.Errorf("loopback alias unsupported on %s", runtime.GOOS)
 }
 
 func (gw *Gateway) removeLoopbackAlias(ip net.IP) {

@@ -279,6 +279,12 @@ func TestMap_StartsProxyWithStubs(t *testing.T) {
 	}
 	withExecStubs(t, true)
 
+	// Bypass the privilege check so the test can exercise the real path
+	// through addLoopbackAlias without requiring root.
+	old := loopbackPrivilegeCheck
+	loopbackPrivilegeCheck = func() error { return nil }
+	defer func() { loopbackPrivilegeCheck = old }()
+
 	// Use ports=[] so listenPort never actually attempts a bind — we only
 	// need to exercise Map → startProxy → addLoopbackAlias. (The bind path
 	// is already covered by TestListenPort_AcceptsAndBridges.)
@@ -325,6 +331,10 @@ func TestMap_ExplicitIPWithStubs(t *testing.T) {
 		t.Skipf("skip on %s", runtime.GOOS)
 	}
 	withExecStubs(t, true)
+
+	old := loopbackPrivilegeCheck
+	loopbackPrivilegeCheck = func() error { return nil }
+	defer func() { loopbackPrivilegeCheck = old }()
 
 	d := &pipeDialerSync{}
 	gw, err := New(Config{Subnet: "10.66.0.0/16", Ports: []uint16{}}, d)
@@ -401,7 +411,10 @@ func TestAddRemoveLoopbackAlias_StubExec(t *testing.T) {
 
 	// Both must complete without panic. Errors from the stub (rc=0) are
 	// expected to be nil; logging is the only side effect we observe.
-	gw.addLoopbackAlias(ip)
+	// The function now returns an error; with stubs it should succeed.
+	if err := gw.addLoopbackAlias(ip); err != nil {
+		t.Fatalf("addLoopbackAlias with successful stub: %v", err)
+	}
 	gw.removeLoopbackAlias(ip)
 }
 
@@ -420,7 +433,9 @@ func TestAddRemoveLoopbackAlias_StubExecFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ip := net.ParseIP("10.4.0.200")
-	gw.addLoopbackAlias(ip)    // logs error
+	if err := gw.addLoopbackAlias(ip); err != nil {
+		t.Logf("addLoopbackAlias (rc=1 stub) returned error: %v", err)
+	}
 	gw.removeLoopbackAlias(ip) // logs error
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
@@ -40,6 +41,15 @@ type Gateway struct {
 	listeners map[string]net.Listener // localIP:port → TCP listener
 	aliases   []net.IP                // loopback aliases to clean up on Stop
 	done      chan struct{}
+}
+
+// loopbackPrivilegeCheck verifies the process can manage loopback aliases.
+// Overridden in tests to bypass the OS euid gate.
+var loopbackPrivilegeCheck = func() error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("loopback alias management requires root (or CAP_NET_ADMIN on Linux); effective UID %d — restart gateway with sudo or grant ambient capabilities", os.Geteuid())
+	}
+	return nil
 }
 
 // New creates a new Gateway bound to the given Dialer. The Dialer is
@@ -156,7 +166,16 @@ func (gw *Gateway) Unmap(localIP string) error {
 }
 
 func (gw *Gateway) startProxy(localIP net.IP, pilotAddr protocol.Addr) {
-	gw.addLoopbackAlias(localIP)
+	if err := loopbackPrivilegeCheck(); err != nil {
+		slog.Error("gateway startProxy: privilege check failed — loopback alias not created",
+			"err", err)
+		return
+	}
+	if err := gw.addLoopbackAlias(localIP); err != nil {
+		slog.Error("gateway startProxy: loopback alias setup failed — proxy not started",
+			"ip", localIP, "pilot_addr", pilotAddr, "err", err)
+		return
+	}
 
 	gw.mu.Lock()
 	gw.aliases = append(gw.aliases, localIP)
