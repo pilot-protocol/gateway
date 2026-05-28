@@ -10,7 +10,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
+	"github.com/pilot-protocol/common/protocol"
 )
 
 // DefaultPorts is the default set of ports the gateway proxies.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
+	"github.com/pilot-protocol/common/protocol"
 )
 
 // TestListenPortWarnOnBindFailure regression-tests the log level for a
