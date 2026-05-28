@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os/exec"
-	"runtime"
 	"sync"
 
 	"github.com/TeoSlayer/pilotprotocol/pkg/protocol"
@@ -166,38 +164,6 @@ func (gw *Gateway) startProxy(localIP net.IP, pilotAddr protocol.Addr) {
 
 	for _, port := range gw.config.Ports {
 		go gw.listenPort(localIP, port, pilotAddr)
-	}
-}
-
-func (gw *Gateway) addLoopbackAlias(ip net.IP) {
-	var err error
-	switch runtime.GOOS {
-	case "linux":
-		err = exec.Command("ip", "addr", "add", ip.String()+"/32", "dev", "lo").Run()
-	case "darwin":
-		err = exec.Command("ifconfig", "lo0", "alias", ip.String()).Run()
-	default:
-		slog.Error("addLoopbackAlias: unsupported OS", "os", runtime.GOOS)
-		return
-	}
-	if err != nil {
-		slog.Error("addLoopbackAlias failed", "ip", ip, "os", runtime.GOOS, "err", err)
-	}
-}
-
-func (gw *Gateway) removeLoopbackAlias(ip net.IP) {
-	var err error
-	switch runtime.GOOS {
-	case "linux":
-		err = exec.Command("ip", "addr", "del", ip.String()+"/32", "dev", "lo").Run()
-	case "darwin":
-		err = exec.Command("ifconfig", "lo0", "-alias", ip.String()).Run()
-	default:
-		slog.Error("removeLoopbackAlias: unsupported OS", "os", runtime.GOOS)
-		return
-	}
-	if err != nil {
-		slog.Error("removeLoopbackAlias failed", "ip", ip, "os", runtime.GOOS, "err", err)
 	}
 }
 
