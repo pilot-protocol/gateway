@@ -576,6 +576,123 @@ func TestStop_DialerCloseError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// startProxy / listenPort lifecycle guards
+// ---------------------------------------------------------------------------
+
+// skipIfAliasUnsafe guards tests that could otherwise shell out to the real
+// loopback alias tooling.
+func skipIfAliasUnsafe(t *testing.T) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("running as root; refuse to touch real loopback aliases")
+	}
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skipf("alias stub uses ip/ifconfig — skip on %s", runtime.GOOS)
+	}
+	withExecStubs(t, true)
+}
+
+// TestStartProxy_AfterStopCreatesNoState covers a startProxy goroutine that
+// gets scheduled only after Stop has already drained the alias list.
+func TestStartProxy_AfterStopCreatesNoState(t *testing.T) {
+	skipIfAliasUnsafe(t)
+
+	old := loopbackPrivilegeCheck
+	loopbackPrivilegeCheck = func() error { return nil }
+	defer func() { loopbackPrivilegeCheck = old }()
+
+	gw, err := New(Config{Subnet: "10.4.0.0/16", Ports: []uint16{}}, &pipeDialerSync{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	addr := protocol.Addr{Network: 1, Node: 3}
+	ip, err := gw.Mappings().Map(addr, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+
+	gw.Stop()
+	gw.startProxy(ip, addr)
+
+	gw.mu.Lock()
+	n := len(gw.aliases)
+	gw.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("startProxy registered %d alias(es) after Stop; want 0", n)
+	}
+}
+
+// TestStartProxy_UnmappedCreatesNoState covers a startProxy goroutine that
+// gets scheduled only after the mapping it was started for is gone.
+func TestStartProxy_UnmappedCreatesNoState(t *testing.T) {
+	skipIfAliasUnsafe(t)
+
+	old := loopbackPrivilegeCheck
+	loopbackPrivilegeCheck = func() error { return nil }
+	defer func() { loopbackPrivilegeCheck = old }()
+
+	gw, err := New(Config{Subnet: "10.4.0.0/16", Ports: []uint16{}}, &pipeDialerSync{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer gw.Stop()
+
+	addr := protocol.Addr{Network: 1, Node: 4}
+	ip, err := gw.Mappings().Map(addr, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if err := gw.Mappings().Unmap(ip); err != nil {
+		t.Fatalf("Unmap: %v", err)
+	}
+
+	gw.startProxy(ip, addr)
+
+	gw.mu.Lock()
+	n := len(gw.aliases)
+	gw.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("startProxy registered %d alias(es) for an absent mapping; want 0", n)
+	}
+}
+
+// TestListenPort_AfterStopDoesNotRegister covers a listenPort goroutine whose
+// bind completes after Stop drained the listener map.
+func TestListenPort_AfterStopDoesNotRegister(t *testing.T) {
+	t.Parallel()
+	gw, err := New(Config{Subnet: "10.4.0.0/16", Ports: []uint16{}}, &pipeDialerSync{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	port := uint16(probe.Addr().(*net.TCPAddr).Port)
+	probe.Close()
+
+	gw.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		gw.listenPort(net.ParseIP("127.0.0.1"), port, protocol.Addr{Network: 1, Node: 1})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listenPort did not return after Stop")
+	}
+
+	gw.mu.Lock()
+	n := len(gw.listeners)
+	gw.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("listenPort registered %d listener(s) after Stop; want 0", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

@@ -294,19 +294,25 @@ func TestGatewayConcurrentAccess(t *testing.T) {
 
 func TestGatewaySubnetExhaustion(t *testing.T) {
 	t.Parallel()
-	// /30 has 4 IPs (10.0.0.0-3), usable: starting from .1 we get .1, .2, .3
+	// /30 spans 10.0.0.0-3; .0 is the network address and .3 the broadcast
+	// address, leaving .1 and .2 allocatable.
 	mt, err := gateway.NewMappingTable("10.0.0.0/30")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := uint32(1); i <= 3; i++ {
-		_, err := mt.Map(protocol.Addr{Network: 1, Node: i}, nil)
+	var got []string
+	for i := uint32(1); i <= 2; i++ {
+		ip, err := mt.Map(protocol.Addr{Network: 1, Node: i}, nil)
 		if err != nil {
 			t.Fatalf("Map %d: %v", i, err)
 		}
+		got = append(got, ip.String())
 	}
-	// 4th allocation should fail (subnet exhausted)
-	_, err = mt.Map(protocol.Addr{Network: 1, Node: 4}, nil)
+	if got[0] != "10.0.0.1" || got[1] != "10.0.0.2" {
+		t.Fatalf("allocated %v, want [10.0.0.1 10.0.0.2]", got)
+	}
+	// 3rd allocation should fail (subnet exhausted)
+	_, err = mt.Map(protocol.Addr{Network: 1, Node: 3}, nil)
 	if err == nil {
 		t.Fatal("expected subnet exhaustion error")
 	}

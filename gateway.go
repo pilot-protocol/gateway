@@ -80,13 +80,16 @@ func New(cfg Config, d Dialer) (*Gateway, error) {
 // Stop shuts down the gateway and cleans up loopback aliases.
 // Safe to call multiple times.
 func (gw *Gateway) Stop() {
+	gw.mu.Lock()
 	select {
 	case <-gw.done:
+		gw.mu.Unlock()
 		return // already stopped
 	default:
+		// Closed under gw.mu so a startProxy that has already passed its
+		// own check cannot append host state after the drain below.
 		close(gw.done)
 	}
-	gw.mu.Lock()
 	for ip, ln := range gw.listeners {
 		ln.Close()
 		delete(gw.listeners, ip)
@@ -142,6 +145,10 @@ func (gw *Gateway) Unmap(localIP string) error {
 		return fmt.Errorf("invalid IP: %s", localIP)
 	}
 
+	// The listener close, alias drop and mapping removal happen under one
+	// lock so a startProxy racing this Unmap either observes the mapping
+	// still present (and completes before the teardown) or observes it
+	// gone (and creates nothing).
 	gw.mu.Lock()
 	for key, ln := range gw.listeners {
 		host, _, err := net.SplitHostPort(key)
@@ -159,10 +166,32 @@ func (gw *Gateway) Unmap(localIP string) error {
 			break
 		}
 	}
+	err := gw.mappings.Unmap(ip)
 	gw.mu.Unlock()
 
 	gw.removeLoopbackAlias(ip)
-	return gw.mappings.Unmap(ip)
+	return err
+}
+
+// stoppedLocked reports whether Stop has run. Caller must hold gw.mu.
+func (gw *Gateway) stoppedLocked() bool {
+	select {
+	case <-gw.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// aliasRegisteredLocked reports whether ip still has an alias tracked for
+// cleanup. Caller must hold gw.mu.
+func (gw *Gateway) aliasRegisteredLocked(ip net.IP) bool {
+	for _, alias := range gw.aliases {
+		if alias.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (gw *Gateway) startProxy(localIP net.IP, pilotAddr protocol.Addr) {
@@ -171,13 +200,29 @@ func (gw *Gateway) startProxy(localIP net.IP, pilotAddr protocol.Addr) {
 			"err", err)
 		return
 	}
+
+	// Hold gw.mu across the liveness checks, the alias creation and the
+	// bookkeeping append so Stop and Unmap cannot interleave and leave an
+	// alias behind that nothing tracks.
+	gw.mu.Lock()
+	if gw.stoppedLocked() {
+		gw.mu.Unlock()
+		slog.Debug("gateway startProxy: gateway stopped — proxy not started",
+			"ip", localIP, "pilot_addr", pilotAddr)
+		return
+	}
+	if cur, ok := gw.mappings.Lookup(localIP); !ok || cur != pilotAddr {
+		gw.mu.Unlock()
+		slog.Debug("gateway startProxy: mapping gone — proxy not started",
+			"ip", localIP, "pilot_addr", pilotAddr)
+		return
+	}
 	if err := gw.addLoopbackAlias(localIP); err != nil {
+		gw.mu.Unlock()
 		slog.Error("gateway startProxy: loopback alias setup failed — proxy not started",
 			"ip", localIP, "pilot_addr", pilotAddr, "err", err)
 		return
 	}
-
-	gw.mu.Lock()
 	gw.aliases = append(gw.aliases, localIP)
 	gw.mu.Unlock()
 
@@ -195,6 +240,13 @@ func (gw *Gateway) listenPort(localIP net.IP, port uint16, pilotAddr protocol.Ad
 	}
 
 	gw.mu.Lock()
+	if gw.stoppedLocked() {
+		// Stop already drained the listener map; this one would never be
+		// closed by anything else.
+		gw.mu.Unlock()
+		ln.Close()
+		return
+	}
 	key := fmt.Sprintf("%s:%d", localIP, port)
 	gw.listeners[key] = ln
 	gw.mu.Unlock()

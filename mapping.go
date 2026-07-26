@@ -16,7 +16,11 @@ type MappingTable struct {
 	forward map[string]protocol.Addr // local IP → pilot addr
 	reverse map[protocol.Addr]net.IP // pilot addr → local IP
 	subnet  *net.IPNet
-	nextIP  net.IP
+	nextIP  net.IP   // sweep cursor: addresses at or above this are untouched
+	network net.IP   // subnet network address, nil when the prefix has none
+	bcast   net.IP   // subnet broadcast address, nil when the prefix has none
+	freed   []net.IP // released addresses, handed out before the cursor advances
+	swept   bool     // cursor has reached the end of the address space
 }
 
 // NewMappingTable creates a mapping table for the given subnet (e.g. "10.4.0.0/16").
@@ -26,17 +30,55 @@ func NewMappingTable(cidr string) (*MappingTable, error) {
 		return nil, fmt.Errorf("parse subnet: %w", err)
 	}
 
-	// Start allocation at .0.1
+	// Allocation begins one past the subnet base, which is the network
+	// address for every prefix wide enough to have one.
 	startIP := make(net.IP, len(subnet.IP))
 	copy(startIP, subnet.IP)
-	startIP[len(startIP)-1] = 1
+	startIP[len(startIP)-1] |= 1
+
+	network, bcast := edgeAddrs(subnet)
 
 	return &MappingTable{
 		forward: make(map[string]protocol.Addr),
 		reverse: make(map[protocol.Addr]net.IP),
 		subnet:  subnet,
 		nextIP:  startIP,
+		network: network,
+		bcast:   bcast,
 	}, nil
+}
+
+// edgeAddrs returns the network and broadcast addresses of subnet. Both are
+// nil when the prefix leaves fewer than two addresses (/31 and /32 for IPv4,
+// /127 and /128 for IPv6), where every address in the range is usable.
+func edgeAddrs(subnet *net.IPNet) (network, bcast net.IP) {
+	if len(subnet.Mask) != len(subnet.IP) {
+		return nil, nil
+	}
+	ones, bits := subnet.Mask.Size()
+	if bits == 0 || bits-ones < 2 {
+		return nil, nil
+	}
+
+	network = make(net.IP, len(subnet.IP))
+	copy(network, subnet.IP)
+
+	bcast = make(net.IP, len(subnet.IP))
+	for i := range bcast {
+		bcast[i] = subnet.IP[i] | ^subnet.Mask[i]
+	}
+	return network, bcast
+}
+
+// reserved reports whether ip is the subnet's network or broadcast address.
+func (mt *MappingTable) reserved(ip net.IP) bool {
+	if mt.network != nil && mt.network.Equal(ip) {
+		return true
+	}
+	if mt.bcast != nil && mt.bcast.Equal(ip) {
+		return true
+	}
+	return false
 }
 
 // Map registers a mapping between a Pilot address and a local IP.
@@ -58,6 +100,9 @@ func (mt *MappingTable) Map(pilotAddr protocol.Addr, localIP net.IP) (net.IP, er
 	} else {
 		if !mt.subnet.Contains(localIP) {
 			return nil, fmt.Errorf("IP %s not in subnet %s", localIP, mt.subnet)
+		}
+		if mt.reserved(localIP) {
+			return nil, fmt.Errorf("IP %s is the network or broadcast address of %s", localIP, mt.subnet)
 		}
 	}
 
@@ -84,6 +129,12 @@ func (mt *MappingTable) Unmap(localIP net.IP) error {
 
 	delete(mt.forward, ipStr)
 	delete(mt.reverse, addr)
+
+	// Return the address to the pool so the cursor sweep is not the only
+	// source of free addresses.
+	released := make(net.IP, len(localIP))
+	copy(released, localIP)
+	mt.freed = append(mt.freed, released)
 	return nil
 }
 
@@ -122,31 +173,52 @@ func (mt *MappingTable) All() []Mapping {
 	return result
 }
 
+// allocNextIP returns an unused address from the subnet, or nil when every
+// usable address is taken. Released addresses are handed out first; only then
+// does the cursor sweep forward over addresses never allocated before. The
+// subnet's network and broadcast addresses are never returned.
 func (mt *MappingTable) allocNextIP() net.IP {
-	for {
-		ip := make(net.IP, len(mt.nextIP))
-		copy(ip, mt.nextIP)
-
-		if !mt.subnet.Contains(ip) {
-			return nil
-		}
-
-		// Increment nextIP
-		incIP(mt.nextIP)
-
-		// Skip .0 and .255 for /24+ subnets
-		ipStr := ip.String()
-		if _, exists := mt.forward[ipStr]; !exists {
+	for len(mt.freed) > 0 {
+		ip := mt.freed[0]
+		mt.freed = mt.freed[1:]
+		// An address can be re-taken by an explicit Map while it sits in
+		// the pool, so re-check before handing it out.
+		if _, exists := mt.forward[ip.String()]; !exists {
 			return ip
 		}
 	}
+
+	for !mt.swept {
+		if !mt.subnet.Contains(mt.nextIP) {
+			break
+		}
+
+		ip := make(net.IP, len(mt.nextIP))
+		copy(ip, mt.nextIP)
+		if !incIP(mt.nextIP) {
+			// Cursor wrapped past the top of the address space; this is
+			// the last address the sweep can offer.
+			mt.swept = true
+		}
+
+		if mt.reserved(ip) {
+			continue
+		}
+		if _, exists := mt.forward[ip.String()]; !exists {
+			return ip
+		}
+	}
+	return nil
 }
 
-func incIP(ip net.IP) {
+// incIP increments ip in place. It reports false when the increment wrapped
+// the whole address back to all-zeros.
+func incIP(ip net.IP) bool {
 	for i := len(ip) - 1; i >= 0; i-- {
 		ip[i]++
 		if ip[i] != 0 {
-			break
+			return true
 		}
 	}
+	return false
 }
